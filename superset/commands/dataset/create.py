@@ -34,6 +34,7 @@ from superset.daos.dataset import DatasetDAO
 from superset.daos.exceptions import DAOCreateFailedError
 from superset.exceptions import SupersetSecurityException
 from superset.extensions import db, security_manager
+from superset.sql_parse import Table
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,10 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
         if (
             database
             and not sql
-            and not DatasetDAO.validate_table_exists(database, table_name, schema)
+            and not DatasetDAO.validate_table_exists(
+                database,
+                Table(table_name, schema),
+            )
         ):
             exceptions.append(TableNotFoundValidationError(table_name))
 

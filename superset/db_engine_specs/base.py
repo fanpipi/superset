@@ -61,7 +61,7 @@ from sqlparse.tokens import CTE
 
 from superset import security_manager, sql_parse
 from superset.constants import TimeGrain as TimeGrainConstants
-from superset.databases.utils import make_url_safe
+from superset.databases.utils import get_table_metadata, make_url_safe
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import OAuth2Error, OAuth2RedirectError
 from superset.sql_parse import ParsedQuery, SQLScript, Table
@@ -80,6 +80,7 @@ from superset.utils.oauth2 import encode_oauth2_state
 
 if TYPE_CHECKING:
     from superset.connectors.sqla.models import TableColumn
+    from superset.databases.schemas import TableMetadataResponse
     from superset.models.core import Database
     from superset.models.sql_lab import Query
 
@@ -1035,6 +1036,21 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         return indexes
 
     @classmethod
+    def get_table_metadata(  # pylint: disable=unused-argument
+        cls,
+        database: Database,
+        table: Table,
+    ) -> TableMetadataResponse:
+        """
+        Returns basic table metadata
+
+        :param database: Database instance
+        :param table: A Table instance
+        :return: Basic table metadata
+        """
+        return get_table_metadata(database, table)
+
+    @classmethod
     def get_extra_table_metadata(  # pylint: disable=unused-argument
         cls,
         database: Database,
@@ -1472,36 +1488,34 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         cls,
         database: Database,  # pylint: disable=unused-argument
         inspector: Inspector,
-        table_name: str,
-        schema: str | None,
+        table: Table,
     ) -> list[dict[str, Any]]:
         """
         Get the indexes associated with the specified schema/table.
 
         :param database: The database to inspect
         :param inspector: The SQLAlchemy inspector
-        :param table_name: The table to inspect
-        :param schema: The schema to inspect
+        :param table: The table instance to inspect
         :returns: The indexes
         """
 
-        return inspector.get_indexes(table_name, schema)
+        return inspector.get_indexes(table.table, table.schema)
 
     @classmethod
     def get_table_comment(
-        cls, inspector: Inspector, table_name: str, schema: str | None
+        cls,
+        inspector: Inspector,
+        table: Table,
     ) -> str | None:
         """
         Get comment of table from a given schema and table
-
         :param inspector: SqlAlchemy Inspector instance
-        :param table_name: Table name
-        :param schema: Schema name. If omitted, uses default schema for database
+        :param table: Table instance
         :return: comment of table
         """
         comment = None
         try:
-            comment = inspector.get_table_comment(table_name, schema)
+            comment = inspector.get_table_comment(table.table, table.schema)
             comment = comment.get("text") if isinstance(comment, dict) else None
         except NotImplementedError:
             # It's expected that some dialects don't implement the comment method
@@ -1515,22 +1529,25 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
     def get_columns(  # pylint: disable=unused-argument
         cls,
         inspector: Inspector,
-        table_name: str,
-        schema: str | None,
+        table: Table,
         options: dict[str, Any] | None = None,
     ) -> list[ResultSetColumnType]:
         """
-        Get all columns from a given schema and table
+        Get all columns from a given schema and table.
+
+        The inspector will be bound to a catalog, if one was specified.
 
         :param inspector: SqlAlchemy Inspector instance
-        :param table_name: Table name
-        :param schema: Schema name. If omitted, uses default schema for database
+        :param table: Table instance
         :param options: Extra options to customise the display of columns in
                         some databases
         :return: All columns in table
         """
         return convert_inspector_columns(
-            cast(list[SQLAColumnType], inspector.get_columns(table_name, schema))
+            cast(
+                list[SQLAColumnType],
+                inspector.get_columns(table.table, table.schema),
+            )
         )
 
     @classmethod
@@ -1538,8 +1555,7 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         cls,
         database: Database,
         inspector: Inspector,
-        table_name: str,
-        schema: str | None,
+        table: Table,
     ) -> list[MetricType]:
         """
         Get all metrics from a given schema and table.
@@ -1556,17 +1572,15 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
     @classmethod
     def where_latest_partition(  # pylint: disable=too-many-arguments,unused-argument
         cls,
-        table_name: str,
-        schema: str | None,
         database: Database,
+        table: Table,
         query: Select,
         columns: list[ResultSetColumnType] | None = None,
     ) -> Select | None:
         """
         Add a where clause to a query to reference only the most recent partition
 
-        :param table_name: Table name
-        :param schema: Schema name
+        :param table: Table instance
         :param database: Database instance
         :param query: SqlAlchemy query
         :param columns: List of TableColumns
@@ -1589,9 +1603,8 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
     def select_star(  # pylint: disable=too-many-arguments,too-many-locals
         cls,
         database: Database,
-        table_name: str,
+        table: Table,
         engine: Engine,
-        schema: str | None = None,
         limit: int = 100,
         show_cols: bool = False,
         indent: bool = True,
@@ -1604,9 +1617,8 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         WARNING: expects only unquoted table and schema names.
 
         :param database: Database instance
-        :param table_name: Table name, unquoted
+        :param table: Table instance
         :param engine: SqlAlchemy Engine instance
-        :param schema: Schema, unquoted
         :param limit: limit to impose on query
         :param show_cols: Show columns in query; otherwise use "*"
         :param indent: Add indentation to query
@@ -1618,16 +1630,18 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
         fields: str | list[Any] = "*"
         cols = cols or []
         if (show_cols or latest_partition) and not cols:
-            cols = database.get_columns(table_name, schema)
+            cols = database.get_columns(table)
 
         if show_cols:
             fields = cls._get_fields(cols)
+
         quote = engine.dialect.identifier_preparer.quote
         quote_schema = engine.dialect.identifier_preparer.quote_schema
-        if schema:
-            full_table_name = quote_schema(schema) + "." + quote(table_name)
-        else:
-            full_table_name = quote(table_name)
+        full_table_name = (
+            quote_schema(table.schema) + "." + quote(table.table)
+            if table.schema
+            else quote(table.table)
+        )
 
         qry = select(fields).select_from(text(full_table_name))
 
@@ -1635,7 +1649,10 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
             qry = qry.limit(limit)
         if latest_partition:
             partition_query = cls.where_latest_partition(
-                table_name, schema, database, qry, columns=cols
+                database,
+                table,
+                qry,
+                columns=cols,
             )
             if partition_query is not None:
                 qry = partition_query

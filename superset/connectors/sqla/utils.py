@@ -38,7 +38,7 @@ from superset.exceptions import (
 )
 from superset.models.core import Database
 from superset.result_set import SupersetResultSet
-from superset.sql_parse import ParsedQuery
+from superset.sql_parse import ParsedQuery, Table
 from superset.superset_typing import ResultSetColumnType
 
 if TYPE_CHECKING:
@@ -47,24 +47,18 @@ if TYPE_CHECKING:
 
 def get_physical_table_metadata(
     database: Database,
-    table_name: str,
+    table: Table,
     normalize_columns: bool,
-    schema_name: str | None = None,
 ) -> list[ResultSetColumnType]:
     """Use SQLAlchemy inspector to get table metadata"""
     db_engine_spec = database.db_engine_spec
     db_dialect = database.get_dialect()
-    # ensure empty schema
-    _schema_name = schema_name if schema_name else None
+
     # Table does not exist or is not visible to a connection.
+    if not (database.has_table(table) or database.has_view(table)):
+        raise NoSuchTableError(table)
 
-    if not (
-        database.has_table_by_name(table_name=table_name, schema=_schema_name)
-        or database.has_view_by_name(view_name=table_name, schema=_schema_name)
-    ):
-        raise NoSuchTableError
-
-    cols = database.get_columns(table_name, schema=_schema_name)
+    cols = database.get_columns(table)
     for col in cols:
         try:
             if isinstance(col["type"], TypeEngine):

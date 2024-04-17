@@ -304,20 +304,18 @@ class BigQueryEngineSpec(BaseEngineSpec):  # pylint: disable=too-many-public-met
         cls,
         database: "Database",
         inspector: Inspector,
-        table_name: str,
-        schema: Optional[str],
+        table: Table,
     ) -> list[dict[str, Any]]:
         """
         Get the indexes associated with the specified schema/table.
 
         :param database: The database to inspect
         :param inspector: The SQLAlchemy inspector
-        :param table_name: The table to inspect
-        :param schema: The schema to inspect
+        :param table: The table instance to inspect
         :returns: The indexes
         """
 
-        return cls.normalize_indexes(inspector.get_indexes(table_name, schema))
+        return cls.normalize_indexes(inspector.get_indexes(table.table, table.schema))
 
     @classmethod
     def get_extra_table_metadata(
@@ -325,7 +323,7 @@ class BigQueryEngineSpec(BaseEngineSpec):  # pylint: disable=too-many-public-met
         database: "Database",
         table: Table,
     ) -> dict[str, Any]:
-        indexes = database.get_indexes(table.table, table.schema)
+        indexes = database.get_indexes(table)
         if not indexes:
             return {}
         partitions_columns = [
@@ -629,9 +627,8 @@ class BigQueryEngineSpec(BaseEngineSpec):  # pylint: disable=too-many-public-met
     def select_star(  # pylint: disable=too-many-arguments
         cls,
         database: "Database",
-        table_name: str,
+        table: Table,
         engine: Engine,
-        schema: Optional[str] = None,
         limit: int = 100,
         show_cols: bool = False,
         indent: bool = True,
@@ -690,9 +687,8 @@ class BigQueryEngineSpec(BaseEngineSpec):  # pylint: disable=too-many-public-met
 
         return super().select_star(
             database,
-            table_name,
+            table,
             engine,
-            schema,
             limit,
             show_cols,
             indent,
